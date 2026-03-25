@@ -39,7 +39,7 @@ Everything is fully reversible — the Uninstall option rolls back every change.
 
 ### First-Time Setup
 
-1. **Log in to your kid's computer** with your own admin account.
+1. **Log in to your kid's computer** with your domain admin account.
 2. **Right-click** `installer.ps1` and choose **Run with PowerShell**, or open an elevated PowerShell window and run:
    ```powershell
    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
