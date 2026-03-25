@@ -1,6 +1,6 @@
 # Restricted Installer Admin Tool
 
-A PowerShell script that creates a locked-down local administrator account on Windows 11 (23H2+) so your kids can install software via UAC prompts **without** being able to log in, manage users, or join the machine to a domain.
+A PowerShell script for **domain-joined** Windows 11 (23H2+) machines that creates a locked-down local administrator account so your kids can install software via UAC prompts **without** being able to log in, manage users, or remove the machine from the domain.
 
 ## What Does It Do?
 
@@ -30,7 +30,7 @@ Everything is fully reversible — the Uninstall option rolls back every change.
 
 ## Requirements
 
-- Windows 11 23H2 or later
+- **Domain-joined** Windows 11 23H2 or later
 - PowerShell 5.1+
 - **Run as Administrator** (the script enforces this)
 - (Optional) A no-authentication SMTP relay on your network for email notifications
@@ -86,7 +86,7 @@ Run the script, choose **option 2** — Uninstall. This removes the account, all
 During install, the script asks for SMTP settings. If configured:
 
 - An email is sent immediately after install and uninstall
-- A scheduled task monitors for network profile changes — if the machine rejoins a domain, it sends a one-time alert
+- A scheduled task monitors for network profile changes — when the machine reconnects to the domain network, it sends a one-time alert
 
 Settings are stored in the registry at `HKLM:\SOFTWARE\RestrictedInstaller` and can be updated by reinstalling.
 
@@ -104,6 +104,9 @@ A: AppLocker blocks `net.exe` and `net1.exe` for that account. They'd also need 
 
 **Q: Can they bypass AppLocker by renaming executables?**
 A: AppLocker file path rules block the specific paths. Renaming system executables requires admin rights and ownership changes on protected Windows files, which standard users cannot do.
+
+**Q: Does this work on non-domain machines?**
+A: No. This script is designed for domain-joined machines. The domain-reconnect notification relies on domain connectivity, and the overall use case assumes a managed environment where kids use a domain-joined PC at home.
 
 **Q: Does this work on Windows 10?**
 A: It may work on Windows 10 Enterprise/Education (which support AppLocker), but it's designed and tested for Windows 11 23H2+. Windows 10 Home/Pro does not include AppLocker.
