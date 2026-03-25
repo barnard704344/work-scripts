@@ -10,6 +10,7 @@
     - Supports Lock/Unlock (disable/enable account)
     - Logs all actions to C:\Windows\Temp\RestrictedInstaller.log
     - Supports full uninstall / rollback
+    - Email notification via SMTP relay when machine rejoins domain
     - Menu-driven interface
 #>
 
@@ -24,6 +25,14 @@ $Script:LogPath    = "C:\Windows\Temp\RestrictedInstaller.log"
 $Script:MarkerKey  = "HKLM:\SOFTWARE\RestrictedInstaller"
 $Script:MarkerName = "Installed"
 $Script:RuleTag    = "RestrictedInstaller"
+$Script:TaskName   = "RestrictedInstaller_DomainNotify"
+
+# Email notification config (no-auth SMTP relay)
+# These are populated during install via prompt, then persisted in the registry.
+$Script:SmtpServer = ""
+$Script:SmtpPort   = 25
+$Script:MailFrom   = ""
+$Script:MailTo     = ""
 
 # Executables blocked via AppLocker Exe rules (.exe only)
 $Script:BlockExePaths = @(
@@ -255,11 +264,202 @@ function Remove-NtfsDenyRule {
 }
 
 # -----------------------------
+# SMTP settings: prompt + registry persistence
+# -----------------------------
+function Read-SmtpSettings {
+    # Load previously saved values as defaults
+    $savedServer = ""
+    $savedFrom   = ""
+    $savedTo     = ""
+    $savedPort   = "25"
+    if (Test-Path $Script:MarkerKey) {
+        $props = Get-ItemProperty -Path $Script:MarkerKey -ErrorAction SilentlyContinue
+        if ($props.SmtpServer) { $savedServer = $props.SmtpServer }
+        if ($props.MailFrom)   { $savedFrom   = $props.MailFrom }
+        if ($props.MailTo)     { $savedTo     = $props.MailTo }
+        if ($props.SmtpPort)   { $savedPort   = [string]$props.SmtpPort }
+    }
+
+    Write-Host ""
+    Write-Host "Email Notification Settings" -ForegroundColor Cyan
+    Write-Host "(Used to notify when this machine rejoins the domain)"
+    Write-Host ""
+
+    $defaultHint = { param($name, $val) if ($val) { " [$val]" } else { "" } }
+
+    do {
+        $prompt  = "SMTP relay server" + (& $defaultHint "server" $savedServer)
+        $answer  = Read-Host $prompt
+        $Script:SmtpServer = if ($answer) { $answer } else { $savedServer }
+    } while (-not $Script:SmtpServer)
+
+    $prompt  = "SMTP port" + (& $defaultHint "port" $savedPort)
+    $answer  = Read-Host $prompt
+    $Script:SmtpPort = if ($answer) { [int]$answer } else { [int]$savedPort }
+
+    do {
+        $prompt  = "From address" + (& $defaultHint "from" $savedFrom)
+        $answer  = Read-Host $prompt
+        $Script:MailFrom = if ($answer) { $answer } else { $savedFrom }
+    } while (-not $Script:MailFrom)
+
+    do {
+        $prompt  = "Notification recipient (To address)" + (& $defaultHint "to" $savedTo)
+        $answer  = Read-Host $prompt
+        $Script:MailTo = if ($answer) { $answer } else { $savedTo }
+    } while (-not $Script:MailTo)
+
+    Write-Host ""
+    Write-Host "  SMTP Server : $($Script:SmtpServer):$($Script:SmtpPort)" -ForegroundColor Gray
+    Write-Host "  From        : $($Script:MailFrom)" -ForegroundColor Gray
+    Write-Host "  To          : $($Script:MailTo)" -ForegroundColor Gray
+    Write-Host ""
+}
+
+function Save-SmtpSettings {
+    # Persist SMTP settings in the installation registry key
+    if (-not (Test-Path $Script:MarkerKey)) {
+        New-Item -Path $Script:MarkerKey -Force | Out-Null
+    }
+    New-ItemProperty -Path $Script:MarkerKey -Name "SmtpServer" -Value $Script:SmtpServer -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $Script:MarkerKey -Name "SmtpPort"   -Value $Script:SmtpPort   -PropertyType DWord  -Force | Out-Null
+    New-ItemProperty -Path $Script:MarkerKey -Name "MailFrom"   -Value $Script:MailFrom   -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $Script:MarkerKey -Name "MailTo"     -Value $Script:MailTo     -PropertyType String -Force | Out-Null
+    Write-Log "SMTP settings saved to registry."
+}
+
+# -----------------------------
+# Email notification
+# -----------------------------
+function Send-InstallNotification {
+    param([string]$Subject, [string]$Action)
+
+    # Guard: skip if SMTP is not configured
+    if (-not $Script:SmtpServer -or -not $Script:MailFrom -or -not $Script:MailTo) {
+        Write-Log "WARNING: SMTP settings not configured - skipping email notification."
+        return
+    }
+
+    $hostname  = $env:COMPUTERNAME
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $logBody   = "No log file found."
+    if (Test-Path $Script:LogPath) {
+        $logBody = Get-Content $Script:LogPath -Raw
+    }
+
+    $body = "Machine: $hostname`nAction: $Action`nTime: $timestamp`n`n--- Log ---`n$logBody"
+
+    try {
+        Send-MailMessage `
+            -From $Script:MailFrom `
+            -To $Script:MailTo `
+            -Subject $Subject `
+            -Body $body `
+            -SmtpServer $Script:SmtpServer `
+            -Port $Script:SmtpPort `
+            -ErrorAction Stop
+        Write-Log "Email notification sent to $($Script:MailTo)."
+    }
+    catch {
+        Write-Log "WARNING: Failed to send email notification: $_"
+    }
+}
+
+# -----------------------------
+# Scheduled task: notify on domain reconnect
+# -----------------------------
+function Register-DomainNotifyTask {
+    # Inline script the task will execute (runs as SYSTEM)
+    # Reads SMTP settings from registry so nothing is hardcoded.
+    $scriptBlock = @"
+param()
+`$markerKey  = '$($Script:MarkerKey)'
+`$logPath    = '$($Script:LogPath)'
+`$markerSent = 'NotificationSent'
+
+# Bail out if registry key is missing
+if (-not (Test-Path `$markerKey)) { exit 0 }
+
+# Only send once
+`$sent = (Get-ItemProperty -Path `$markerKey -Name `$markerSent -ErrorAction SilentlyContinue).`$markerSent
+if (`$sent -eq 1) { exit 0 }
+
+# Load SMTP settings from registry
+`$reg = Get-ItemProperty -Path `$markerKey -ErrorAction SilentlyContinue
+`$smtpServer = `$reg.SmtpServer
+`$smtpPort   = `$reg.SmtpPort
+`$mailFrom   = `$reg.MailFrom
+`$mailTo     = `$reg.MailTo
+if (-not `$smtpServer -or -not `$mailFrom -or -not `$mailTo) { exit 0 }
+
+# Verify domain connectivity
+try {
+    `$domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetComputerDomain().Name
+} catch { exit 0 }
+
+`$hostname  = `$env:COMPUTERNAME
+`$logBody   = if (Test-Path `$logPath) { Get-Content `$logPath -Raw } else { 'No log found.' }
+`$body      = "Machine: `$hostname`nDomain: `$domain`nTime: `$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n`n--- Log ---`n`$logBody"
+
+try {
+    Send-MailMessage -From `$mailFrom -To `$mailTo ``
+        -Subject "[RestrictedInstaller] `$hostname rejoined domain `$domain" ``
+        -Body `$body -SmtpServer `$smtpServer -Port `$smtpPort -ErrorAction Stop
+    # Mark as sent so we don't repeat
+    if (Test-Path `$markerKey) {
+        New-ItemProperty -Path `$markerKey -Name `$markerSent -Value 1 -PropertyType DWord -Force | Out-Null
+    }
+} catch {}
+"@
+
+    $scriptPath = Join-Path $env:windir "Temp\RestrictedInstaller_DomainNotify.ps1"
+    $scriptBlock | Set-Content -Path $scriptPath -Encoding UTF8 -Force
+
+    # Trigger: Microsoft-Windows-NetworkProfile/Operational Event ID 10000
+    # Fires when the network location awareness (NLA) detects a profile change (e.g. domain joined)
+    $cimTrigger = New-CimInstance -ClassName MSFT_TaskEventTrigger `
+        -Namespace Root/Microsoft/Windows/TaskScheduler `
+        -ClientOnly `
+        -Property @{
+            Enabled      = $true
+            Subscription = '<QueryList><Query Id="0" Path="Microsoft-Windows-NetworkProfile/Operational"><Select Path="Microsoft-Windows-NetworkProfile/Operational">*[System[EventID=10000]]</Select></Query></QueryList>'
+        }
+
+    $action   = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+
+    Register-ScheduledTask `
+        -TaskName $Script:TaskName `
+        -Trigger @($cimTrigger) `
+        -Action $action `
+        -Settings $settings `
+        -Principal (New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest) `
+        -Description "Sends email notification when this machine rejoins a domain after RestrictedInstaller setup." `
+        -Force | Out-Null
+
+    Write-Log "Scheduled task '$($Script:TaskName)' registered (triggers on network profile change)."
+}
+
+function Unregister-DomainNotifyTask {
+    if (Get-ScheduledTask -TaskName $Script:TaskName -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $Script:TaskName -Confirm:$false
+        Write-Log "Scheduled task '$($Script:TaskName)' removed."
+    }
+    $scriptPath = Join-Path $env:windir "Temp\RestrictedInstaller_DomainNotify.ps1"
+    if (Test-Path $scriptPath) {
+        Remove-Item $scriptPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# -----------------------------
 # Install
 # -----------------------------
 function Install-RestrictedInstaller {
 
     Write-Log "=== INSTALL STARTED ==="
+
+    # Prompt for SMTP settings before anything else
+    Read-SmtpSettings
 
     $passwordPlain = New-Password
     Write-Log "Generated password for $($Script:UserName): $passwordPlain"
@@ -357,15 +557,30 @@ function Install-RestrictedInstaller {
         Write-Log "ERROR applying deny logon rights: $_"
     }
 
-    # 8 - Installation marker
+    # 8 - Installation marker + save SMTP settings
     try {
         Write-Log "Writing installation marker..."
         New-Item -Path $Script:MarkerKey -Force | Out-Null
         New-ItemProperty -Path $Script:MarkerKey -Name $Script:MarkerName -Value 1 -PropertyType DWord -Force | Out-Null
+        Save-SmtpSettings
     }
     catch {
         Write-Log "ERROR writing installation marker: $_"
     }
+
+    # 9 - Register domain-reconnect notification task
+    try {
+        Write-Log "Registering domain-reconnect notification task..."
+        Register-DomainNotifyTask
+    }
+    catch {
+        Write-Log "ERROR registering notification task: $_"
+    }
+
+    # 10 - Send immediate install notification (best-effort)
+    Send-InstallNotification `
+        -Subject "[RestrictedInstaller] Install on $env:COMPUTERNAME" `
+        -Action "Install"
 
     Write-Log "=== INSTALL COMPLETED ==="
     Write-Host "`nInstall complete. Restricted installer account: $($Script:UserName)" -ForegroundColor Green
@@ -379,11 +594,20 @@ function Uninstall-RestrictedInstaller {
 
     Write-Log "=== UNINSTALL STARTED ==="
 
-    # 1 - Remove AppLocker rules
+    # 1 - Remove notification task
+    try {
+        Write-Log "Removing domain-reconnect notification task..."
+        Unregister-DomainNotifyTask
+    }
+    catch {
+        Write-Log "ERROR removing notification task: $_"
+    }
+
+    # 2 - Remove AppLocker rules
     Write-Log "Removing AppLocker rules..."
     Remove-AppLockerDenyRules
 
-    # 2 - Remove NTFS deny ACLs
+    # 3 - Remove NTFS deny ACLs
     try {
         foreach ($path in $Script:BlockAclPaths) {
             Remove-NtfsDenyRule -Path $path -Identity $Script:UserName
@@ -393,7 +617,7 @@ function Uninstall-RestrictedInstaller {
         Write-Log "ERROR removing NTFS deny ACLs: $_"
     }
 
-    # 3 - Remove registry restrictions
+    # 4 - Remove registry restrictions
     try {
         Write-Log "Removing Accounts settings visibility policy..."
         if (Test-Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer") {
@@ -415,7 +639,7 @@ function Uninstall-RestrictedInstaller {
         Write-Log "ERROR removing WorkplaceJoin policy: $_"
     }
 
-    # 4 - Remove deny logon rights
+    # 5 - Remove deny logon rights
     try {
         $sid = Get-UserSid -Name $Script:UserName
         if ($null -ne $sid) {
@@ -432,7 +656,7 @@ function Uninstall-RestrictedInstaller {
         Write-Log "ERROR removing deny logon rights: $_"
     }
 
-    # 5 - Remove local user
+    # 6 - Remove local user
     try {
         Write-Log "Removing local user '$($Script:UserName)'..."
         if (Get-LocalUser -Name $Script:UserName -ErrorAction SilentlyContinue) {
@@ -445,7 +669,19 @@ function Uninstall-RestrictedInstaller {
         Write-Log "ERROR removing local user: $_"
     }
 
-    # 6 - Remove marker
+    # 7 - Load SMTP settings and send notification BEFORE removing the registry key
+    if (Test-Path $Script:MarkerKey) {
+        $regProps = Get-ItemProperty -Path $Script:MarkerKey -ErrorAction SilentlyContinue
+        if ($regProps.SmtpServer) { $Script:SmtpServer = $regProps.SmtpServer }
+        if ($regProps.SmtpPort)   { $Script:SmtpPort   = $regProps.SmtpPort }
+        if ($regProps.MailFrom)   { $Script:MailFrom   = $regProps.MailFrom }
+        if ($regProps.MailTo)     { $Script:MailTo     = $regProps.MailTo }
+    }
+    Send-InstallNotification `
+        -Subject "[RestrictedInstaller] Uninstall on $env:COMPUTERNAME" `
+        -Action "Uninstall"
+
+    # 8 - Remove marker
     try {
         Write-Log "Removing installation marker..."
         if (Test-Path $Script:MarkerKey) {
