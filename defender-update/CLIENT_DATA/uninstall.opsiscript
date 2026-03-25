@@ -1,0 +1,42 @@
+; OPSI Uninstall Script - Defender Daily Signature Update
+; Removes the scheduled task and deployed script
+
+[Actions]
+requiredOpsiscriptVersion >= "4.12.0"
+
+DefVar $TaskName$
+DefVar $ScriptDir$
+
+Set $TaskName$  = "DefenderDailySignatureUpdate"
+Set $ScriptDir$ = "C:\ProgramData\DefenderUpdate"
+
+comment "=== Defender Daily Signature Update - Uninstall ==="
+
+; -------------------------------------------------------
+; 1. Remove scheduled task
+; -------------------------------------------------------
+comment "Removing scheduled task..."
+ShellInAnIcon_RemoveTask
+
+; -------------------------------------------------------
+; 2. Remove deployed files
+; -------------------------------------------------------
+comment "Removing deployed files..."
+if FileExists($ScriptDir$)
+    Files_RemoveDir
+endif
+
+comment "=== Uninstall complete ==="
+
+
+; =====================================================
+; Shell sections
+; =====================================================
+[ShellInAnIcon_RemoveTask]
+powershell.exe -ExecutionPolicy Bypass -NoProfile -Command "Unregister-ScheduledTask -TaskName '$TaskName$' -Confirm:$false -ErrorAction SilentlyContinue"
+
+; =====================================================
+; File sections
+; =====================================================
+[Files_RemoveDir]
+del -sf "$ScriptDir$"

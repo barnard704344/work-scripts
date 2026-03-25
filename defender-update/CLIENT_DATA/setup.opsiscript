@@ -1,0 +1,88 @@
+; OPSI Setup Script - Defender Daily Signature Update
+; Deploys a scheduled task that updates Defender definitions daily
+; Target: Domain-joined Windows 11 machines
+
+[Actions]
+requiredOpsiscriptVersion >= "4.12.0"
+
+DefVar $ProductId$
+DefVar $TaskName$
+DefVar $ScriptSource$
+DefVar $ScriptDest$
+DefVar $ScriptDir$
+DefVar $LogDir$
+DefVar $ExitCode$
+
+Set $ProductId$  = "defender-update"
+Set $TaskName$   = "DefenderDailySignatureUpdate"
+Set $ScriptDir$  = "C:\ProgramData\DefenderUpdate"
+Set $ScriptDest$ = $ScriptDir$ + "\update-defender.ps1"
+Set $LogDir$     = $ScriptDir$
+
+comment "=== Defender Daily Signature Update - Setup ==="
+
+; -------------------------------------------------------
+; 1. Create target directory
+; -------------------------------------------------------
+comment "Creating script directory..."
+if not (FileExists($ScriptDir$))
+    Files_CreateDir
+endif
+
+; -------------------------------------------------------
+; 2. Copy update script to target
+; -------------------------------------------------------
+comment "Deploying update script..."
+Set $ScriptSource$ = "%ScriptPath%\update-defender.ps1"
+Files_CopyScript
+
+; -------------------------------------------------------
+; 3. Remove existing scheduled task if present
+; -------------------------------------------------------
+comment "Removing existing task (if any)..."
+ShellInAnIcon_RemoveTask
+
+; -------------------------------------------------------
+; 4. Create daily scheduled task
+; -------------------------------------------------------
+comment "Creating daily scheduled task..."
+ShellInAnIcon_CreateTask
+
+; -------------------------------------------------------
+; 5. Run an immediate update
+; -------------------------------------------------------
+comment "Running initial Defender signature update..."
+ShellInAnIcon_RunNow
+
+; -------------------------------------------------------
+; 6. Verify task exists
+; -------------------------------------------------------
+comment "Verifying scheduled task..."
+ShellInAnIcon_VerifyTask
+
+comment "=== Setup complete ==="
+
+
+; =====================================================
+; File sections
+; =====================================================
+[Files_CreateDir]
+mkdir "$ScriptDir$"
+
+[Files_CopyScript]
+copy "$ScriptSource$" "$ScriptDest$"
+
+; =====================================================
+; Shell sections
+; =====================================================
+[ShellInAnIcon_RemoveTask]
+powershell.exe -ExecutionPolicy Bypass -NoProfile -Command "Unregister-ScheduledTask -TaskName '$TaskName$' -Confirm:$false -ErrorAction SilentlyContinue"
+
+[ShellInAnIcon_CreateTask]
+powershell.exe -ExecutionPolicy Bypass -NoProfile -Command "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-ExecutionPolicy Bypass -NoProfile -NonInteractive -WindowStyle Hidden -File \"$ScriptDest$\"'; $triggers = @(); $times = @('07:00','10:00','13:00','16:00','19:00'); foreach ($t in $times) { $tr = New-ScheduledTaskTrigger -Daily -At $t; $tr.Repetition = $null; $triggers += $tr }; $logonTrigger = New-ScheduledTaskTrigger -AtLogOn; $logonTrigger.Delay = 'PT2M'; $triggers += $logonTrigger; $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RunOnlyIfNetworkAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 15); $settings.ExecutionTimeLimit = 'PT30M'; $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; Register-ScheduledTask -TaskName '$TaskName$' -Action $action -Trigger $triggers -Settings $settings -Principal $principal -Description 'Windows Defender signature update - runs multiple times daily and at logon (OPSI deployed)' -Force"
+
+[ShellInAnIcon_RunNow]
+powershell.exe -ExecutionPolicy Bypass -NoProfile -NonInteractive -File "$ScriptDest$"
+
+[ShellInAnIcon_VerifyTask]
+powershell.exe -ExecutionPolicy Bypass -NoProfile -Command "$task = Get-ScheduledTask -TaskName '$TaskName$' -ErrorAction SilentlyContinue; if (-not $task) { Write-Error 'Task not found'; exit 1 } else { Write-Host 'Task registered: ' $task.State }"

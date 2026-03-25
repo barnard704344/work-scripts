@@ -1,0 +1,32 @@
+[Package]
+version: 1
+depends:
+
+[Product]
+type: localboot
+id: defender-update
+name: Defender Daily Signature Update
+description: Deploys a daily scheduled task that updates Windows Defender signatures on domain-joined machines. Uses 4 fallback methods including direct download from Microsoft to bypass WSUS/GPO restrictions.
+advice: Requires Windows 11 23H2+ with Windows Defender active. Task runs as SYSTEM at 7AM/10AM/1PM/4PM/7PM and at logon. Skips if updated within last 4 hours.
+version: 1.0.0
+packageversion: 1
+priority: 0
+licenseRequired: false
+productClasses:
+setupScript: setup.opsiscript
+uninstallScript: uninstall.opsiscript
+updateScript:
+alwaysScript:
+onceScript:
+customScript:
+userLoginScript:
+
+[ProductProperty]
+
+[Changelog]
+defender-update (1.0.0-1)
+  * Initial release
+  * 4-method signature update (cmdlet, MMPC, MpCmdRun, direct download)
+  * Daily scheduled task running as SYSTEM
+  * Log rotation at 5 MB
+  * OPSI setup and uninstall scripts
