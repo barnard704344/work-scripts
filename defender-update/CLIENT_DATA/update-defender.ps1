@@ -167,8 +167,8 @@ function Update-DefenderSignatures {
             Write-Log "ERROR: Downloaded file too small ($([math]::Round($fileSize, 1)) MB). Possible redirect."
             Remove-Item $defStaging -Recurse -Force -ErrorAction SilentlyContinue
         } else {
-            # Extract definitions from mpam-fe.exe
-            $extractProc = Start-Process -FilePath $tempFile -ArgumentList "-q -o`"$extractDir`"" -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+            # Extract definitions from mpam-fe.exe (CAB-in-EXE format)
+            $extractProc = Start-Process -FilePath "expand" -ArgumentList "`"$tempFile`" -F:* `"$extractDir`"" -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
             Write-Log "Extraction exit code: $($extractProc.ExitCode)"
 
             # Apply via MpCmdRun -SignatureUpdate -UNC (runs through Defender service as SYSTEM)

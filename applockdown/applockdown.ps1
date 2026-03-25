@@ -421,7 +421,13 @@ function Install-AppLockdown {
 
     # --- Enable Application Identity service ---
     Write-Log "Enabling Application Identity service (AppIDSvc) ..."
-    Set-Service -Name $Script:ServiceName -StartupType Automatic
+    try {
+        Set-Service -Name $Script:ServiceName -StartupType Automatic -ErrorAction Stop
+    } catch {
+        # Set-Service can fail on protected services; fall back to sc.exe
+        Write-Log "Set-Service failed ($($_.Exception.Message)), using sc.exe ..."
+        & sc.exe config $Script:ServiceName start= auto | Out-Null
+    }
     Start-Service -Name $Script:ServiceName -ErrorAction SilentlyContinue
 
     # --- Set install marker ---
@@ -494,7 +500,11 @@ function Uninstall-AppLockdown {
     # --- Reset Application Identity service ---
     Write-Log "Resetting Application Identity service to manual ..."
     Stop-Service -Name $Script:ServiceName -Force -ErrorAction SilentlyContinue
-    Set-Service -Name $Script:ServiceName -StartupType Manual
+    try {
+        Set-Service -Name $Script:ServiceName -StartupType Manual -ErrorAction Stop
+    } catch {
+        & sc.exe config $Script:ServiceName start= demand | Out-Null
+    }
 
     # --- Remove install marker ---
     Remove-ItemProperty -Path $Script:MarkerKey -Name $Script:MarkerName -ErrorAction SilentlyContinue
