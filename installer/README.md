@@ -1,94 +1,96 @@
 # Restricted Installer Admin Tool
 
-A PowerShell script for **domain-joined** Windows 11 (23H2+) machines that creates a locked-down local administrator account so your kids can install software via UAC prompts **without** being able to log in, manage users, or remove the machine from the domain.
+A PowerShell script for **domain-joined** Windows 11 (23H2+) machines that creates a locked-down local administrator account for UAC elevation. Designed for school IT environments where students need the ability to install software but must not have unrestricted admin access.
 
-## What Does It Do?
+## Overview
 
-When a standard (non-admin) user tries to install software on Windows, a UAC prompt asks for admin credentials. This script creates a special admin account called **InstallerUser** that:
+Standard domain users cannot install software without admin credentials. This script creates a local account called **InstallerUser** that:
 
-- **Can** be used to approve UAC elevation prompts (software installs, driver updates, etc.)
-- **Cannot** log in to the desktop (local or remote/RDP)
-- **Cannot** open Computer Management, User Manager, or any tool that manages accounts
-- **Cannot** join the computer to a domain or workplace
-- **Cannot** open System Properties or Account settings
+- **Can** approve UAC elevation prompts (software installs, driver updates, etc.)
+- **Cannot** log in interactively (local or RDP)
+- **Cannot** open Computer Management, User Manager, or any account management tool
+- **Cannot** modify domain membership or workplace join settings
+- **Cannot** access System Properties or Account settings
 
-The password is a simple two-word phrase (e.g. `maple-storm`) that's easy to tell your kids over the phone or write on a sticky note, without worrying about them doing anything dangerous with it.
+The account password is a generated two-word phrase (e.g. `maple-storm`) intended to be shared with end users for UAC prompts only.
 
-## How It Works (Technical Summary)
+## How It Works
 
 | Layer | What it does |
 |---|---|
-| **Local account** | Creates `InstallerUser` in the Administrators group |
-| **AppLocker** | Deny rules block `mmc.exe`, `net.exe`, `net1.exe`, and `SystemPropertiesComputerName.exe` for that user |
-| **NTFS ACLs** | Deny read/execute on `sysdm.cpl` (System Properties control panel) |
-| **Secedit** | Assigns `SeDenyInteractiveLogonRight` and `SeDenyRemoteInteractiveLogonRight` so the account can't actually log in |
-| **Registry policies** | Hides the Accounts page in Settings; blocks the domain/workplace join UI |
-| **Scheduled task** | Fires on network profile changes and sends an email when the machine rejoins a domain |
+| **Local account** | Creates `InstallerUser` in the local Administrators group |
+| **AppLocker** | Deny rules block `mmc.exe`, `net.exe`, `net1.exe`, and `SystemPropertiesComputerName.exe` for that account |
+| **NTFS ACLs** | Deny read/execute on `sysdm.cpl` (System Properties) |
+| **Secedit** | Assigns `SeDenyInteractiveLogonRight` and `SeDenyRemoteInteractiveLogonRight` |
+| **Registry policies** | Hides the Accounts settings page; blocks domain/workplace join UI |
+| **Scheduled task** | Fires on network profile changes and sends an email when the machine reconnects to the domain |
 | **Email notifications** | Sends install/uninstall confirmations and domain-reconnect alerts via a no-auth SMTP relay |
 
-Everything is fully reversible — the Uninstall option rolls back every change.
+All changes are fully reversible via the Uninstall option.
 
 ## Requirements
 
 - **Domain-joined** Windows 11 23H2 or later
 - PowerShell 5.1+
-- **Run as Administrator** (the script enforces this)
-- (Optional) A no-authentication SMTP relay on your network for email notifications
+- **Run as Administrator** (enforced by `#Requires -RunAsAdministrator`)
+- (Optional) A no-authentication SMTP relay for email notifications
 
-## Parent How-To
+## Deployment
 
-### First-Time Setup
+### Installation
 
-1. **Log in to your kid's computer** with your domain admin account.
-2. **Right-click** `installer.ps1` and choose **Run with PowerShell**, or open an elevated PowerShell window and run:
+1. Open an **elevated PowerShell** session on the target machine.
+2. Run the script:
    ```powershell
    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
    .\installer.ps1
    ```
-3. Choose **option 1** — Install.
-4. The script will ask for **email settings** (SMTP server, port, from/to addresses). If you don't have a mail relay, just type any placeholder — notifications will silently fail and everything else still works.
-5. When it finishes, it prints the generated password — something like `cedar-falcon`. **Write this down.** This is the password your kids will type into UAC prompts.
+3. Choose **option 1** (Install).
+4. Enter SMTP settings when prompted (server, port, from/to addresses). If no mail relay is available, enter placeholder values — notifications will fail silently and all other functionality works normally.
+5. The generated password is displayed on completion. Record it for distribution to end users.
 
-### What to Tell Your Kids
+### Providing Credentials to End Users
 
-> "When Windows asks for permission to install something, type **InstallerUser** as the username and **cedar-falcon** as the password, then click Yes."
+When a UAC prompt appears, users enter:
+- **Username:** `InstallerUser`
+- **Password:** the generated phrase (e.g. `cedar-falcon`)
 
-That's it. They can approve installs but they can't log in as that account, manage users, or change system settings.
+The account cannot be used for anything beyond UAC elevation.
 
 ### Temporarily Disabling the Account
 
-If you want to block installs for a while (exam season, grounding, etc.):
+To prevent installs temporarily:
 
 1. Run the script as admin.
-2. Choose **option 3** — Lock. This disables the account so UAC prompts won't accept it.
-3. When you're ready to allow installs again, run the script and choose **option 4** — Unlock.
+2. Choose **option 3** (Lock) to disable the account.
+3. Choose **option 4** (Unlock) to re-enable it.
 
 ### Reinstalling / Repairing
 
-Run the script, choose **option 1**. If it's already installed, it will ask if you want to reinstall. Say **Y** — this regenerates the password and re-applies all restrictions.
+Run the script, choose **option 1**. If already installed, confirm the reinstall when prompted. This regenerates the password and re-applies all restrictions.
 
-### Removing Everything
+### Uninstalling
 
-Run the script, choose **option 2** — Uninstall. This removes the account, all AppLocker rules, ACLs, registry policies, and the scheduled task. The machine goes back to exactly how it was before.
+Choose **option 2** (Uninstall). This removes the account, AppLocker rules, ACLs, registry policies, the scheduled task, and the installation marker. The machine is returned to its previous state.
 
 ## Menu Options
 
 | Option | Description |
 |---|---|
 | **1. Install** | Creates the restricted account and applies all lockdowns |
-| **2. Uninstall** | Fully rolls back every change made by the script |
-| **3. Lock** | Disables the account (UAC prompts stop working for it) |
+| **2. Uninstall** | Fully rolls back every change |
+| **3. Lock** | Disables the account (UAC elevation blocked) |
 | **4. Unlock** | Re-enables the account |
 | **5. Exit** | Closes the script |
 
 ## Email Notifications
 
-During install, the script asks for SMTP settings. If configured:
+During install, the script prompts for SMTP relay settings. If configured:
 
-- An email is sent immediately after install and uninstall
-- A scheduled task monitors for network profile changes — when the machine reconnects to the domain network, it sends a one-time alert
+- An email is sent on install and uninstall
+- A scheduled task monitors for network profile changes — when the machine reconnects to the domain, a one-time notification is sent
 
-Settings are stored in the registry at `HKLM:\SOFTWARE\RestrictedInstaller` and can be updated by reinstalling.
+SMTP settings are persisted in the registry at `HKLM:\SOFTWARE\RestrictedInstaller` and can be updated by reinstalling.
 
 ## Logs
 
@@ -96,20 +98,20 @@ All actions are logged to `C:\Windows\Temp\RestrictedInstaller.log`.
 
 ## FAQ
 
-**Q: What if my kid figures out the password and tries to log in with it?**
-A: They can't. The account is denied interactive and remote logon rights via local security policy. Windows will reject the login even with the correct password.
+**Q: Can a user log in with the InstallerUser account?**
+A: No. The account is denied interactive and remote logon rights via local security policy. Windows will reject the login even with the correct password.
 
-**Q: What if they open Command Prompt and run `net user`?**
-A: AppLocker blocks `net.exe` and `net1.exe` for that account. They'd also need to be running as InstallerUser to do anything with it, which they can't since they can't log in as that user.
+**Q: What about `net user` from a command prompt?**
+A: AppLocker blocks `net.exe` and `net1.exe` for the InstallerUser account. Standard users running under their own session cannot use those commands to modify admin accounts regardless.
 
-**Q: Can they bypass AppLocker by renaming executables?**
-A: AppLocker file path rules block the specific paths. Renaming system executables requires admin rights and ownership changes on protected Windows files, which standard users cannot do.
+**Q: Can AppLocker be bypassed by renaming executables?**
+A: The rules block specific system paths. Renaming files in `%WINDIR%\System32` requires ownership changes and admin rights that standard users do not have.
 
 **Q: Does this work on non-domain machines?**
-A: No. This script is designed for domain-joined machines. The domain-reconnect notification relies on domain connectivity, and the overall use case assumes a managed environment where kids use a domain-joined PC at home.
+A: No. The script is designed for domain-joined environments. The domain-reconnect notification depends on domain connectivity detection.
 
 **Q: Does this work on Windows 10?**
-A: It may work on Windows 10 Enterprise/Education (which support AppLocker), but it's designed and tested for Windows 11 23H2+. Windows 10 Home/Pro does not include AppLocker.
+A: It may work on Windows 10 Enterprise/Education (which include AppLocker) but is designed for Windows 11 23H2+. Windows 10 Home/Pro does not support AppLocker.
 
-**Q: I don't have an SMTP relay. Will the script still work?**
+**Q: We don't have an SMTP relay. Does the script still work?**
 A: Yes. Email notifications are best-effort. If sending fails, it logs a warning and continues normally.
